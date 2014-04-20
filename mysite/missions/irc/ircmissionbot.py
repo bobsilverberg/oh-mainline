@@ -7,6 +7,7 @@ from irc.bot import SingleServerIRCBot
 TOPIC_ANSWER = '42'
 TOPIC_PREFIX = "OpenHatch IRC mission channel || The question: What is the answer to life, the universe, and everything? || "
 
+
 class IrcMissionBot(SingleServerIRCBot):
     # States in which a session can be
     STATE_SAID_HI = 1
@@ -14,9 +15,18 @@ class IrcMissionBot(SingleServerIRCBot):
 
     def __init__(self):
         SingleServerIRCBot.__init__(self, [settings.IRC_MISSION_SERVER],
-            settings.IRC_MISSIONBOT_NICK, settings.IRC_MISSIONBOT_REALNAME)
+                                    settings.IRC_MISSIONBOT_NICK,
+                                    settings.IRC_MISSIONBOT_REALNAME)
+        self.connection.buffer_class.errors = 'replace'
         self.channel = settings.IRC_MISSION_CHANNEL
         self.active_sessions = {}
+
+        self.ircobj.execute_every(5, self.check_for_registered_nicks)
+
+    def check_for_registered_nicks(self):
+        for nick in self.active_sessions:
+            if self.active_sessions[nick]['registration_status'] != 'registered':
+                    self.connection.privmsg('NickServ', 'INFO %s' % nick)
 
     def on_nicknameinuse(self, conn, event):
         conn.nick(conn.get_nickname() + '_')
@@ -31,8 +41,8 @@ class IrcMissionBot(SingleServerIRCBot):
             password = view_helpers.make_password()
             IrcMissionSession(nick=nick, password=password).save()
             conn.privmsg(self.channel,
-              'Hello, %(nick)s! To start the mission, reply to me with the words : %(password)s'
-                % {'nick': nick, 'password': password})
+                         'Hello, %(nick)s! To start the mission, reply to me with the words : %(password)s'
+                         % {'nick': nick, 'password': password})
 
     def destroy_session(self, nick):
         IrcMissionSession.objects.filter(nick=nick).delete()
@@ -53,7 +63,6 @@ class IrcMissionBot(SingleServerIRCBot):
 
     def on_topic(self, conn, event):
         nick = event.source.split('!')[0]
-        channel = event.target
         new_topic = event.arguments[0]
 
         # Don't verify the topic change if we're the ones who did it.
@@ -72,6 +81,15 @@ class IrcMissionBot(SingleServerIRCBot):
             if nick[0] in '@+':
                 nick = nick[1:]  # remove op/voice prefix
             self.setup_session(nick, conn)
+
+    def on_nick(self, conn, event):
+        old_nick = event.source.split('!')[0]
+        new_nick = event.target
+        self.active_sessions[new_nick] = self.active_sessions[old_nick]
+        del self.active_sessions[old_nick]
+        session = IrcMissionSession.objects.get(nick=old_nick, person__isnull=False)
+        session.nick = new_nick
+        session.save()
 
     def on_part(self, conn, event):
         nick = event.source.split('!')[0]
@@ -95,24 +113,51 @@ class IrcMissionBot(SingleServerIRCBot):
             self.handle_channel_message(nick, msg, conn)
     on_pubmsg = on_privmsg
 
+    def on_privnotice(self, conn, event):
+        # Check for registered nicks
+
+        from_nick = event.source.split('!')[0]
+        if from_nick == 'NickServ':
+            msg = event.arguments[0]
+            if 'Information on ' in msg:
+                # start collecting messages
+                self.nickserv_message_queue = [msg]
+            elif len(self.nickserv_message_queue):
+                self.nickserv_message_queue.append(msg)
+            if 'End of Info' in msg:
+                # process message queue
+                self._check_queue_for_registered_nick()
+                # clear out queue
+                self.nickserv_message_queue = []
+
+    def _check_queue_for_registered_nick(self):
+        nick_found = False
+        for nick in self.active_sessions:
+            if self.active_sessions[nick]['registration_status'] != 'registered':
+                for msg in self.nickserv_message_queue:
+                    if 'Information on ' in msg and nick in msg:
+                        nick_found = True
+                    if 'Registered : ' in msg and nick_found:
+                        self.active_sessions[nick]['registration_status'] = 'registered'
+                        self.connection.privmsg(self.channel,
+                                                'Congratulations, %s! You have successfully registered your nickname.'
+                                                % nick)
+                        return
+
     def handle_private_message(self, nick, msg, conn):
         pass
 
     def handle_channel_message(self, nick, msg, conn):
-        if nick not in self.active_sessions:
-            # Check for the hello message.
-            mynick_lower = conn.get_nickname().lower()
-            msg_lower = msg.lower()
-            if mynick_lower in msg_lower and ('hello' in msg_lower or 'hi' in msg_lower):
-                try:
-                    session = IrcMissionSession.objects.get(nick=nick, person__isnull=False)
-                    self.active_sessions[nick] = self.STATE_SAID_HI
-                    conn.privmsg(self.channel, "Hi! Nice to have another person here.  We're busy but we try to be friendly.  Say, do you know the answer to the question in the topic?")
-                except IrcMissionSession.DoesNotExist:
-                    conn.privmsg(self.channel, "Good to see you, %s.  Be sure you check the private message I sent you so you can start the mission." % nick)
-
-        elif self.active_sessions[nick] == self.STATE_SAID_HI:
-            # Look for the word referred to in the topic.
-            if TOPIC_ANSWER in msg:
-                self.active_sessions[nick] = self.STATE_ANSWERED_TOPIC
-                conn.privmsg(self.channel, "That's right. Thanks!")
+        mynick_lower = conn.get_nickname().lower()
+        msg_lower = msg.lower()
+        if mynick_lower in msg_lower:
+            try:
+                session = IrcMissionSession.objects.get(nick=nick, person__isnull=True)
+                if session.password.lower() in msg_lower:
+                    self.active_sessions[nick] = {'registration_status': ''}
+                    conn.privmsg(self.channel,
+                                 "Great work, %s! You are now ready to start the mission. Check the mission web page for your next instruction."
+                                 % nick)
+            except IrcMissionSession.DoesNotExist:
+                self.setup_session(nick, conn)
+                self.handle_channel_message(nick, msg, conn)

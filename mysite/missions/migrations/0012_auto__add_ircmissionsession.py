@@ -14,6 +14,7 @@ class Migration(SchemaMigration):
             ('person', self.gf('django.db.models.fields.related.ForeignKey')(to=orm['profile.Person'], null=True)),
             ('nick', self.gf('django.db.models.fields.CharField')(unique=True, max_length=255)),
             ('password', self.gf('django.db.models.fields.CharField')(max_length=255)),
+            ('registered', self.gf('django.db.models.fields.BooleanField')(default=False)),
         ))
         db.send_create_signal('missions', ['IrcMissionSession'])
 
@@ -74,7 +75,8 @@ class Migration(SchemaMigration):
             'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
             'nick': ('django.db.models.fields.CharField', [], {'unique': 'True', 'max_length': '255'}),
             'password': ('django.db.models.fields.CharField', [], {'max_length': '255'}),
-            'person': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['profile.Person']", 'null': 'True'})
+            'person': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['profile.Person']", 'null': 'True'}),
+            'registered': ('django.db.models.fields.BooleanField', [], {'default': 'False'})
         },
         'missions.step': {
             'Meta': {'object_name': 'Step'},
